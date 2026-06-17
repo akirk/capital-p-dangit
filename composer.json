@@ -1,0 +1,21 @@
+{
+	"name": "akirk/capital-p-dangit",
+	"description": "PHP-only Gutenberg RTC bot that applies WordPress core's capital_P_dangit() fix.",
+	"type": "wordpress-plugin",
+	"license": "GPL-2.0-or-later",
+	"repositories": [
+		{
+			"type": "vcs",
+			"url": "https://github.com/maxschmeling/y-php"
+		}
+	],
+	"require": {
+		"php": ">=8.1",
+		"maxschmeling/y-php": "dev-main"
+	},
+	"config": {
+		"autoloader-suffix": "CapitalPDangit"
+	},
+	"minimum-stability": "dev",
+	"prefer-stable": true
+}

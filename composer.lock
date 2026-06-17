@@ -1,0 +1,73 @@
+{
+    "_readme": [
+        "This file locks the dependencies of your project to a known state",
+        "Read more about it at https://getcomposer.org/doc/01-basic-usage.md#installing-dependencies",
+        "This file is @generated automatically"
+    ],
+    "content-hash": "a56b7c0e0893d17541f64474cd1382ae",
+    "packages": [
+        {
+            "name": "maxschmeling/y-php",
+            "version": "dev-main",
+            "source": {
+                "type": "git",
+                "url": "https://github.com/maxschmeling/y-php.git",
+                "reference": "4515ef1f427d050f070430cf8ff1a5f1355731aa"
+            },
+            "dist": {
+                "type": "zip",
+                "url": "https://api.github.com/repos/maxschmeling/y-php/zipball/4515ef1f427d050f070430cf8ff1a5f1355731aa",
+                "reference": "4515ef1f427d050f070430cf8ff1a5f1355731aa",
+                "shasum": ""
+            },
+            "require": {
+                "php": ">=8.1"
+            },
+            "require-dev": {
+                "phpunit/phpunit": "^10.5"
+            },
+            "default-branch": true,
+            "type": "library",
+            "autoload": {
+                "psr-4": {
+                    "Yjs\\": "src/"
+                }
+            },
+            "autoload-dev": {
+                "psr-4": {
+                    "Yjs\\Tests\\": "tests/"
+                }
+            },
+            "scripts": {
+                "proof": [
+                    "php examples/proof-of-life.php"
+                ],
+                "test": [
+                    "phpunit"
+                ]
+            },
+            "license": [
+                "MIT"
+            ],
+            "description": "Fresh PHP implementation of Yjs-compatible CRDT primitives targeting binary compatibility with Yjs 13.",
+            "support": {
+                "source": "https://github.com/maxschmeling/y-php/tree/main",
+                "issues": "https://github.com/maxschmeling/y-php/issues"
+            },
+            "time": "2026-06-13T16:14:02+00:00"
+        }
+    ],
+    "packages-dev": [],
+    "aliases": [],
+    "minimum-stability": "dev",
+    "stability-flags": {
+        "maxschmeling/y-php": 20
+    },
+    "prefer-stable": true,
+    "prefer-lowest": false,
+    "platform": {
+        "php": ">=8.1"
+    },
+    "platform-dev": {},
+    "plugin-api-version": "2.9.0"
+}
