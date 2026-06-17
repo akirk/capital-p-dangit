@@ -17,7 +17,7 @@ const CPDANGIT_OPTION_BOT_USER_ID = 'cpdangit_bot_user_id';
 const CPDANGIT_BOT_CLOCK_META_KEY = '_cpdangit_bot_clock';
 const CPDANGIT_ROOM_STATE_META_KEY = '_cpdangit_room_state';
 const CPDANGIT_AWARENESS_NUDGE_TTL = 20;
-const CPDANGIT_ROOM_STATE_SCHEMA_VERSION = 4;
+const CPDANGIT_ROOM_STATE_SCHEMA_VERSION = 5;
 
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/includes/gutenberg-yjs-update-v2.php';

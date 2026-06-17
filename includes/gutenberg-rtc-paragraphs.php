@@ -291,23 +291,61 @@ function cpdangit_gutenberg_rtc_apply_decoded_update_to_paragraph_state( array &
 			'' === trim( (string) ( $block['content'] ?? '' ) ) &&
 			empty( $block['trigger_checked'] )
 		) {
-			$state['blocks'][ $block_id ]['trigger_checked'] = true;
-			$origin_key  = cpdangit_gutenberg_rtc_yjs_id_key( $block['origin'] );
-			$source      = $origin_key && isset( $state['blocks'][ $origin_key ] ) ? $state['blocks'][ $origin_key ] : null;
-			$source_text = is_array( $source ) ? trim( (string) ( $source['content'] ?? '' ) ) : '';
+			$source = cpdangit_gutenberg_rtc_find_completed_paragraph_source( $state, $block );
 
-			if ( $source_text && isset( $source['name'] ) && 'core/paragraph' === $source['name'] ) {
-				$events[] = new Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph(
-					$origin_key,
-					$source_text,
-					$block['origin'],
-					cpdangit_gutenberg_rtc_yjs_id_from_key( $block_id )
-				);
+			if ( null === $source ) {
+				continue;
 			}
+
+			$state['blocks'][ $block_id ]['trigger_checked'] = true;
+			$events[] = new Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph(
+				$source['block_id'],
+				$source['text'],
+				$source['origin'],
+				cpdangit_gutenberg_rtc_yjs_id_from_key( $block_id )
+			);
 		}
 	}
 
 	return $events;
+}
+
+/**
+ * Finds the paragraph text completed by an empty paragraph created from a user newline.
+ *
+ * Gutenberg sometimes keeps later typed text attached to the earlier Y.Text item
+ * while the blocks array records empty paragraph split markers. Walk backward
+ * through those empty paragraph origins until a non-empty paragraph source is
+ * found, but keep the newline-created block as the event trigger.
+ *
+ * @return array{block_id:string,text:string,origin:array{client:int,clock:int}}|null
+ */
+function cpdangit_gutenberg_rtc_find_completed_paragraph_source( array $state, array $empty_block ): ?array {
+	$origin = isset( $empty_block['origin'] ) && is_array( $empty_block['origin'] ) ? $empty_block['origin'] : null;
+
+	while ( $origin ) {
+		$origin_key = cpdangit_gutenberg_rtc_yjs_id_key( $origin );
+		$source     = $origin_key && isset( $state['blocks'][ $origin_key ] ) && is_array( $state['blocks'][ $origin_key ] )
+			? $state['blocks'][ $origin_key ]
+			: null;
+
+		if ( ! $source || ( $source['name'] ?? '' ) !== 'core/paragraph' ) {
+			return null;
+		}
+
+		$source_text = trim( (string) ( $source['content'] ?? '' ) );
+		if ( '' !== $source_text ) {
+			return array(
+				'block_id' => $origin_key,
+				'text'     => $source_text,
+				'origin'   => $origin,
+			);
+		}
+
+		$origin = isset( $source['origin'] ) && is_array( $source['origin'] ) ? $source['origin'] : null;
+	}
+
+	return null;
 }
 
 /**
