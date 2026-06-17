@@ -17,7 +17,7 @@ const CPDANGIT_OPTION_BOT_USER_ID = 'cpdangit_bot_user_id';
 const CPDANGIT_BOT_CLOCK_META_KEY = '_cpdangit_bot_clock';
 const CPDANGIT_ROOM_STATE_META_KEY = '_cpdangit_room_state';
 const CPDANGIT_AWARENESS_NUDGE_TTL = 20;
-const CPDANGIT_ROOM_STATE_SCHEMA_VERSION = 5;
+const CPDANGIT_ROOM_STATE_SCHEMA_VERSION = 6;
 
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/includes/gutenberg-yjs-update-v2.php';
@@ -242,19 +242,20 @@ function cpdangit_maybe_emit_bot_awareness_nudge( int $post_id, string $room, in
 }
 
 /**
- * Emits a bot-authored last-word replacement into a Gutenberg sync room.
+ * Emits a bot-authored word replacement into a Gutenberg sync room.
  *
  * @param int                              $post_id     Post ID.
  * @param string                           $room        Sync room.
- * @param string                           $replacement Replacement word.
+ * @param array{matched_text:string,start:int,length:int,replacement:string} $match Replacement match.
  * @param Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph $paragraph  Completed paragraph event.
  * @return array<string, mixed>|WP_Error
  */
-function cpdangit_emit_bot_last_word_replacement( int $post_id, string $room, string $replacement, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph $paragraph ) {
+function cpdangit_emit_bot_word_replacement( int $post_id, string $room, array $match, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph $paragraph ) {
 	if ( ! $post_id || '' === $room ) {
 		return new WP_Error( 'cpdangit_missing_room', __( 'Missing Capital P Dangit room.', 'capital-p-dangit' ) );
 	}
 
+	$replacement = (string) ( $match['replacement'] ?? '' );
 	if ( '' === $replacement ) {
 		return new WP_Error( 'cpdangit_missing_text', __( 'Missing replacement text.', 'capital-p-dangit' ) );
 	}
@@ -272,15 +273,18 @@ function cpdangit_emit_bot_last_word_replacement( int $post_id, string $room, st
 	$bot_client_id = cpdangit_get_bot_client_id( $bot_user_id );
 	$start_clock   = cpdangit_get_bot_clock( $post_id, $bot_client_id );
 	$state         = cpdangit_get_room_state( $post_id );
-	$replacement_update = cpdangit_gutenberg_rtc_build_last_word_replacement(
+	$replacement_update = cpdangit_gutenberg_rtc_build_text_replacement(
 		$state,
 		$paragraph,
+		(int) $match['start'],
+		(int) $match['length'],
+		(string) $match['matched_text'],
 		$replacement,
 		$bot_client_id,
 		$start_clock
 	);
 	if ( ! $replacement_update ) {
-		return new WP_Error( 'cpdangit_no_replacement', __( 'Could not build a last-word replacement for this paragraph.', 'capital-p-dangit' ) );
+		return new WP_Error( 'cpdangit_no_replacement', __( 'Could not build a word replacement for this paragraph.', 'capital-p-dangit' ) );
 	}
 	$update = $replacement_update['update'];
 
@@ -322,7 +326,7 @@ function cpdangit_emit_bot_last_word_replacement( int $post_id, string $room, st
 	try {
 		$decoded = cpdangit_gutenberg_yjs_decode_update_v2( $update );
 		cpdangit_gutenberg_rtc_apply_decoded_update_to_paragraph_state( $state, $decoded );
-		$state['blocks'][ $paragraph->source_block_id() ]['content'] = cpdangit_replace_last_word( $paragraph->text(), $replacement );
+		$state['blocks'][ $paragraph->source_block_id() ]['content'] = cpdangit_replace_text_match( $paragraph->text(), $match );
 		cpdangit_set_room_state( $post_id, $state );
 	} catch ( RuntimeException $exception ) {
 		cpdangit_log(
@@ -342,8 +346,11 @@ function cpdangit_emit_bot_last_word_replacement( int $post_id, string $room, st
 		'start_clock'      => $start_clock,
 		'next_clock'       => (int) $replacement_update['next_clock'],
 		'update_bytes'     => strlen( $update ),
-		'original_word'    => $replacement_update['original_word'],
+		'update_data'      => base64_encode( $update ),
+		'original_word'    => $match['matched_text'],
 		'replacement'      => $replacement,
+		'start'            => (int) $match['start'],
+		'length'           => (int) $match['length'],
 		'selection'        => $replacement_update['selection'],
 		'origin'           => $replacement_update['origin'],
 		'right_origin'     => $replacement_update['right_origin'],
@@ -451,42 +458,65 @@ function cpdangit_set_bot_clock( int $post_id, int $bot_client_id, int $clock ):
 }
 
 /**
- * Gets the final word in paragraph text.
+ * Finds the first uncorrected WordPress spelling in paragraph text.
+ *
+ * @return array{matched_text:string,start:int,length:int,replacement:string}|null
  */
-function cpdangit_get_last_word( string $text ): string {
-	if ( ! preg_match( '/([\p{L}\p{N}_]+)([^\p{L}\p{N}_]*\s*)$/u', $text, $matches ) ) {
-		return '';
+function cpdangit_find_wordpress_replacement( string $text ): ?array {
+	if ( ! preg_match_all( '/(?<![\p{L}\p{N}_])(wordpress)(?![\p{L}\p{N}_])/iu', $text, $matches, PREG_OFFSET_CAPTURE ) ) {
+		return null;
 	}
 
-	return (string) $matches[1];
+	$fixed_text = function_exists( 'capital_P_dangit' ) ? capital_P_dangit( $text ) : $text;
+
+	foreach ( $matches[1] as $match ) {
+		$matched_text = (string) $match[0];
+		$byte_offset  = (int) $match[1];
+		$replacement  = cpdangit_get_wordpress_replacement_at_offset( $fixed_text, $matched_text, $byte_offset );
+
+		if ( '' === $replacement ) {
+			continue;
+		}
+
+		return array(
+			'matched_text' => $matched_text,
+			'start'        => cpdangit_gutenberg_yjs_utf16_clock_len( substr( $text, 0, $byte_offset ) ),
+			'length'       => cpdangit_gutenberg_yjs_utf16_clock_len( $matched_text ),
+			'replacement'  => $replacement,
+		);
+	}
+
+	return null;
 }
 
 /**
- * Replaces the final word in paragraph text.
+ * Gets the replacement for one candidate word, preferring capital_P_dangit().
  */
-function cpdangit_replace_last_word( string $text, string $replacement ): string {
-	return preg_replace( '/([\p{L}\p{N}_]+)([^\p{L}\p{N}_]*\s*)$/u', $replacement . '$2', $text, 1 ) ?? $text;
-}
-
-/**
- * Gets the replacement produced by capital_P_dangit() for a paragraph's final word.
- */
-function cpdangit_get_wordpress_replacement( string $paragraph_text, string $word ): string {
-	if ( '' === $word ) {
+function cpdangit_get_wordpress_replacement_at_offset( string $fixed_text, string $word, int $byte_offset ): string {
+	if ( 'WordPress' === $word ) {
 		return '';
 	}
 
-	if ( function_exists( 'capital_P_dangit' ) ) {
-		$fixed_text = capital_P_dangit( $paragraph_text );
-		if ( $fixed_text !== $paragraph_text ) {
-			$fixed_word = cpdangit_get_last_word( $fixed_text );
-			if ( '' !== $fixed_word && $fixed_word !== $word ) {
-				return $fixed_word;
-			}
+	if ( '' !== $fixed_text ) {
+		$fixed_word = substr( $fixed_text, $byte_offset, strlen( $word ) );
+		if ( false !== $fixed_word && $fixed_word !== $word && 'WordPress' === $fixed_word ) {
+			return $fixed_word;
 		}
 	}
 
-	return 'wordpress' === strtolower( $word ) && 'WordPress' !== $word ? 'WordPress' : '';
+	return 'wordpress' === strtolower( $word ) ? 'WordPress' : '';
+}
+
+/**
+ * Applies a matched text replacement to plain paragraph text.
+ *
+ * @param array{matched_text:string,start:int,length:int,replacement:string} $match Match metadata.
+ */
+function cpdangit_replace_text_match( string $text, array $match ): string {
+	$matched_text = (string) $match['matched_text'];
+	$replacement  = (string) $match['replacement'];
+
+	return preg_replace( '/(?<![\p{L}\p{N}_])' . preg_quote( $matched_text, '/' ) . '(?![\p{L}\p{N}_])/u', $replacement, $text, 1 ) ?? $text;
 }
 
 /**
@@ -624,19 +654,71 @@ function cpdangit_respond_to_wp_sync_requests( $response, WP_REST_Server $server
 
 		cpdangit_set_room_state( $post_id, $state );
 
-		cpdangit_replace_last_word_in_completed_paragraphs( $post_id, $room, $state, $paragraphs );
+		foreach ( cpdangit_replace_words_in_paragraphs( $post_id, $room, $state, $paragraphs ) as $bot_update ) {
+			$response = cpdangit_append_bot_update_to_response( $response, $room, $bot_update );
+		}
 	}
 
 	return $response;
 }
 
 /**
- * Applies capital_P_dangit() to completed paragraph events.
+ * Adds a bot-authored update to the current sync response so the active editor receives it immediately.
+ *
+ * @param WP_REST_Response|WP_HTTP_Response|WP_Error|mixed $response Response.
+ * @param array<string, mixed>                             $bot_update Bot update metadata.
+ * @return WP_REST_Response|WP_HTTP_Response|WP_Error|mixed
+ */
+function cpdangit_append_bot_update_to_response( $response, string $room, array $bot_update ) {
+	if ( ! $response instanceof WP_REST_Response || empty( $bot_update['update_data'] ) ) {
+		return $response;
+	}
+
+	$data = $response->get_data();
+	if ( ! is_array( $data ) || empty( $data['rooms'] ) || ! is_array( $data['rooms'] ) ) {
+		return $response;
+	}
+
+	foreach ( $data['rooms'] as &$room_response ) {
+		if ( ! is_array( $room_response ) || (string) ( $room_response['room'] ?? '' ) !== $room ) {
+			continue;
+		}
+
+		if ( ! isset( $room_response['updates'] ) || ! is_array( $room_response['updates'] ) ) {
+			$room_response['updates'] = array();
+		}
+
+		$room_response['updates'][] = array(
+			'type' => 'update',
+			'data' => (string) $bot_update['update_data'],
+		);
+
+		if ( isset( $bot_update['response_payload']['rooms'] ) && is_array( $bot_update['response_payload']['rooms'] ) ) {
+			foreach ( $bot_update['response_payload']['rooms'] as $bot_room_response ) {
+				if ( is_array( $bot_room_response ) && (string) ( $bot_room_response['room'] ?? '' ) === $room && isset( $bot_room_response['end_cursor'] ) ) {
+					$room_response['end_cursor'] = $bot_room_response['end_cursor'];
+					break;
+				}
+			}
+		}
+
+		break;
+	}
+	unset( $room_response );
+
+	$response->set_data( $data );
+	return $response;
+}
+
+/**
+ * Applies capital_P_dangit() to paragraph text events.
  *
  * @param array<string, mixed>                      $state      Current paragraph document state.
- * @param array<int, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph> $paragraphs Completed paragraph events.
+ * @param array<int, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph> $paragraphs Paragraph text events.
  */
-function cpdangit_replace_last_word_in_completed_paragraphs( int $post_id, string $room, array &$state, array $paragraphs ): void {
+function cpdangit_replace_words_in_paragraphs( int $post_id, string $room, array &$state, array $paragraphs ): array {
+	$bot_updates = array();
+
 	foreach ( $paragraphs as $paragraph ) {
 		if ( ! $paragraph instanceof Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph ) {
 			continue;
@@ -650,26 +732,25 @@ function cpdangit_replace_last_word_in_completed_paragraphs( int $post_id, strin
 		$state['processed'][ $dedupe_key ] = time();
 		cpdangit_set_room_state( $post_id, $state );
 
-		$last_word   = cpdangit_get_last_word( $paragraph->text() );
-		$replacement = cpdangit_get_wordpress_replacement( $paragraph->text(), $last_word );
+		$match = cpdangit_find_wordpress_replacement( $paragraph->text() );
 
-		if ( '' === $replacement ) {
+		if ( ! $match ) {
 			cpdangit_log(
 				'bot-rtc-skip',
 				array(
-					'room'      => $room,
-					'post_id'   => $post_id,
-					'last_word' => $last_word,
-					'reason'    => 'no_capital_p_dangit_replacement',
+					'room'    => $room,
+					'post_id' => $post_id,
+					'text'    => $paragraph->text(),
+					'reason'  => 'no_capital_p_dangit_replacement',
 				)
 			);
 			continue;
 		}
 
-		$result = cpdangit_emit_bot_last_word_replacement(
+		$result = cpdangit_emit_bot_word_replacement(
 			$post_id,
 			$room,
-			$replacement,
+			$match,
 			$paragraph
 		);
 
@@ -684,7 +765,14 @@ function cpdangit_replace_last_word_in_completed_paragraphs( int $post_id, strin
 				)
 				: array_merge( array( 'room' => $room ), $result )
 		);
+
+		if ( ! is_wp_error( $result ) && is_array( $result ) ) {
+			$bot_updates[] = $result;
+			break;
+		}
 	}
+
+	return $bot_updates;
 }
 
 /**

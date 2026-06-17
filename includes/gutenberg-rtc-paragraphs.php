@@ -137,14 +137,13 @@ function cpdangit_gutenberg_rtc_build_paragraph_insert( array $state, Capital_P_
 }
 
 /**
- * Builds update bytes for replacing the completed paragraph's last word.
+ * Builds update bytes for replacing a text range in a paragraph.
  *
  * @param array<string, mixed> $state State used to locate the source text item.
  * @return array<string, mixed>|null
  */
-function cpdangit_gutenberg_rtc_build_last_word_replacement( array $state, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph $paragraph, string $replacement, int $client_id, int $start_clock ): ?array {
-	$word = cpdangit_gutenberg_rtc_find_last_word( $paragraph->text() );
-	if ( ! $word || '' === $replacement || $replacement === $word['text'] ) {
+function cpdangit_gutenberg_rtc_build_text_replacement( array $state, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph $paragraph, int $start, int $length, string $original, string $replacement, int $client_id, int $start_clock ): ?array {
+	if ( $start < 0 || $length <= 0 || '' === $replacement || $replacement === $original ) {
 		return null;
 	}
 
@@ -154,15 +153,15 @@ function cpdangit_gutenberg_rtc_build_last_word_replacement( array $state, Capit
 	}
 
 	$nodes = cpdangit_gutenberg_rtc_text_nodes_for_block( $state, $paragraph->source_block_id() );
-	if ( count( $nodes ) < $word['start'] + $word['length'] ) {
+	if ( count( $nodes ) < $start + $length ) {
 		return null;
 	}
 
-	$origin       = $word['start'] > 0 ? $nodes[ $word['start'] - 1 ]['id'] : null;
-	$right_origin = $nodes[ $word['start'] ]['id'];
-	$end_item     = $nodes[ $word['start'] + $word['length'] ]['id'] ?? null;
+	$origin       = $start > 0 ? $nodes[ $start - 1 ]['id'] : null;
+	$right_origin = $nodes[ $start ]['id'];
+	$end_item     = $nodes[ $start + $length ]['id'] ?? null;
 	$delete_ranges = cpdangit_gutenberg_rtc_delete_ranges_from_text_nodes(
-		array_slice( $nodes, $word['start'], $word['length'] )
+		array_slice( $nodes, $start, $length )
 	);
 	if ( empty( $delete_ranges ) ) {
 		return null;
@@ -189,13 +188,13 @@ function cpdangit_gutenberg_rtc_build_last_word_replacement( array $state, Capit
 				'clock'  => $start_clock,
 			),
 			'end_item'     => $end_item,
-			'start_offset' => $word['start'],
-			'end_offset'   => $word['start'] + $clock_len,
+			'start_offset' => $start,
+			'end_offset'   => $start + $clock_len,
 		),
 		'cursor_clock'   => $start_clock + max( 0, $clock_len - 1 ),
-		'absoluteOffset' => $word['start'] + $clock_len,
+		'absoluteOffset' => $start + $clock_len,
 		'next_clock'     => $start_clock + $clock_len,
-		'original_word'  => $word['text'],
+		'original_word'  => $original,
 		'replacement'    => $replacement,
 		'origin'         => $origin,
 		'right_origin'   => $right_origin,
@@ -221,30 +220,6 @@ function cpdangit_gutenberg_rtc_find_block_text_type_id( array $state, string $b
 }
 
 /**
- * Finds the final word in plain paragraph text.
- *
- * @return array{text:string,start:int,length:int}|null
- */
-function cpdangit_gutenberg_rtc_find_last_word( string $text ): ?array {
-	if ( ! preg_match( '/([\p{L}\p{N}_]+)([^\p{L}\p{N}_]*\s*)$/u', $text, $matches, PREG_OFFSET_CAPTURE ) ) {
-		return null;
-	}
-
-	$word = (string) $matches[1][0];
-	if ( '' === $word ) {
-		return null;
-	}
-
-	$start = cpdangit_gutenberg_yjs_utf16_clock_len( substr( $text, 0, (int) $matches[1][1] ) );
-
-	return array(
-		'text'   => $word,
-		'start'  => $start,
-		'length' => cpdangit_gutenberg_yjs_utf16_clock_len( $word ),
-	);
-}
-
-/**
  * Applies decoded Yjs structs to the lightweight paragraph document state.
  *
  * @param array<string, mixed> $state   State, mutated in place.
@@ -252,8 +227,9 @@ function cpdangit_gutenberg_rtc_find_last_word( string $text ): ?array {
  * @return array<int, Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph>
  */
 function cpdangit_gutenberg_rtc_apply_decoded_update_to_paragraph_state( array &$state, array $decoded ): array {
-	$events  = array();
-	$structs = isset( $decoded['structs'] ) && is_array( $decoded['structs'] ) ? $decoded['structs'] : array();
+	$events         = array();
+	$touched_blocks = array();
+	$structs        = isset( $decoded['structs'] ) && is_array( $decoded['structs'] ) ? $decoded['structs'] : array();
 
 	foreach ( $structs as $struct ) {
 		if ( ! is_array( $struct ) || ( $struct['kind'] ?? '' ) !== 'item' ) {
@@ -279,73 +255,32 @@ function cpdangit_gutenberg_rtc_apply_decoded_update_to_paragraph_state( array &
 		}
 
 		if ( 'string' === ( $content['type'] ?? '' ) ) {
-			cpdangit_gutenberg_rtc_note_text_item( $state, $struct, $id );
+			$touched_block = cpdangit_gutenberg_rtc_note_text_item( $state, $struct, $id );
+			if ( $touched_block ) {
+				$touched_blocks[ $touched_block ] = true;
+			}
 			cpdangit_gutenberg_rtc_note_root_content_item( $state, $struct, $id );
 		}
 	}
 
-	foreach ( $state['blocks'] as $block_id => $block ) {
+	foreach ( array_keys( $touched_blocks ) as $block_id ) {
+		$block = $state['blocks'][ $block_id ] ?? null;
 		if (
-			isset( $block['name'], $block['origin'] ) &&
+			is_array( $block ) &&
+			isset( $block['name'], $block['id'] ) &&
 			'core/paragraph' === $block['name'] &&
-			'' === trim( (string) ( $block['content'] ?? '' ) ) &&
-			empty( $block['trigger_checked'] )
+			cpdangit_gutenberg_rtc_text_ends_with_delimiter( (string) ( $block['content'] ?? '' ) )
 		) {
-			$source = cpdangit_gutenberg_rtc_find_completed_paragraph_source( $state, $block );
-
-			if ( null === $source ) {
-				continue;
-			}
-
-			$state['blocks'][ $block_id ]['trigger_checked'] = true;
 			$events[] = new Capital_P_Dangit_Gutenberg_RTC_Completed_Paragraph(
-				$source['block_id'],
-				$source['text'],
-				$source['origin'],
-				cpdangit_gutenberg_rtc_yjs_id_from_key( $block_id )
+				$block_id,
+				(string) $block['content'],
+				$block['id'],
+				null
 			);
 		}
 	}
 
 	return $events;
-}
-
-/**
- * Finds the paragraph text completed by an empty paragraph created from a user newline.
- *
- * Gutenberg sometimes keeps later typed text attached to the earlier Y.Text item
- * while the blocks array records empty paragraph split markers. Walk backward
- * through those empty paragraph origins until a non-empty paragraph source is
- * found, but keep the newline-created block as the event trigger.
- *
- * @return array{block_id:string,text:string,origin:array{client:int,clock:int}}|null
- */
-function cpdangit_gutenberg_rtc_find_completed_paragraph_source( array $state, array $empty_block ): ?array {
-	$origin = isset( $empty_block['origin'] ) && is_array( $empty_block['origin'] ) ? $empty_block['origin'] : null;
-
-	while ( $origin ) {
-		$origin_key = cpdangit_gutenberg_rtc_yjs_id_key( $origin );
-		$source     = $origin_key && isset( $state['blocks'][ $origin_key ] ) && is_array( $state['blocks'][ $origin_key ] )
-			? $state['blocks'][ $origin_key ]
-			: null;
-
-		if ( ! $source || ( $source['name'] ?? '' ) !== 'core/paragraph' ) {
-			return null;
-		}
-
-		$source_text = trim( (string) ( $source['content'] ?? '' ) );
-		if ( '' !== $source_text ) {
-			return array(
-				'block_id' => $origin_key,
-				'text'     => $source_text,
-				'origin'   => $origin,
-			);
-		}
-
-		$origin = isset( $source['origin'] ) && is_array( $source['origin'] ) ? $source['origin'] : null;
-	}
-
-	return null;
 }
 
 /**
@@ -418,8 +353,10 @@ function cpdangit_gutenberg_rtc_note_map_field( array &$state, array $struct, st
 
 /**
  * Notes a Y.Text string item.
+ *
+ * @return string|null Block ID touched by the item.
  */
-function cpdangit_gutenberg_rtc_note_text_item( array &$state, array $struct, string $id ): void {
+function cpdangit_gutenberg_rtc_note_text_item( array &$state, array $struct, string $id ): ?string {
 	$content = isset( $struct['content'] ) && is_array( $struct['content'] ) ? $struct['content'] : array();
 	$text    = isset( $content['value'] ) ? (string) $content['value'] : '';
 	$block   = null;
@@ -432,17 +369,31 @@ function cpdangit_gutenberg_rtc_note_text_item( array &$state, array $struct, st
 	}
 
 	if ( ! $block ) {
-		return;
+		return null;
 	}
 
 	$state['blocks'][ $block ]['content'] = (string) ( $state['blocks'][ $block ]['content'] ?? '' ) . $text;
 	$state['text_items_to_block'][ $id ]  = array(
-		'block'  => $block,
-		'length' => (int) ( $struct['length'] ?? cpdangit_gutenberg_yjs_utf16_clock_len( $text ) ),
-		'origin' => isset( $struct['origin'] ) && is_array( $struct['origin'] ) ? $struct['origin'] : null,
-		'text'   => $text,
+		'block'        => $block,
+		'length'       => (int) ( $struct['length'] ?? cpdangit_gutenberg_yjs_utf16_clock_len( $text ) ),
+		'origin'       => isset( $struct['origin'] ) && is_array( $struct['origin'] ) ? $struct['origin'] : null,
+		'right_origin' => isset( $struct['right_origin'] ) && is_array( $struct['right_origin'] ) ? $struct['right_origin'] : null,
+		'text'         => $text,
 	);
 	$state['blocks'][ $block ]['content'] = cpdangit_gutenberg_rtc_reconstruct_block_text_from_items( $state, $block );
+
+	return $block;
+}
+
+/**
+ * Checks whether text ends in a word-delimiting character.
+ */
+function cpdangit_gutenberg_rtc_text_ends_with_delimiter( string $text ): bool {
+	if ( '' === $text ) {
+		return false;
+	}
+
+	return (bool) preg_match( '/[^\p{L}\p{N}_]$/u', $text );
 }
 
 /**
@@ -493,11 +444,15 @@ function cpdangit_gutenberg_rtc_text_nodes_for_block( array $state, string $bloc
 					'client' => (int) $item_id['client'],
 					'clock'  => (int) $item_id['clock'] + $index - 1,
 				);
-			$origin_key = $origin ? cpdangit_gutenberg_rtc_yjs_id_key( $origin ) : '';
+			$origin_key   = $origin ? cpdangit_gutenberg_rtc_yjs_id_key( $origin ) : '';
+			$right_origin = 0 === $index && isset( $item['right_origin'] ) && is_array( $item['right_origin'] )
+				? $item['right_origin']
+				: null;
 
 			$nodes[ $id_key ]      = array(
-				'id'   => $id,
-				'text' => $char,
+				'id'           => $id,
+				'right_origin' => $right_origin,
+				'text'         => $char,
 			);
 			$children[ $origin_key ][] = $id_key;
 		}
@@ -507,8 +462,19 @@ function cpdangit_gutenberg_rtc_text_nodes_for_block( array $state, string $bloc
 		usort(
 			$child_keys,
 			static function ( string $a, string $b ) use ( $nodes ): int {
-				$a_id = $nodes[ $a ]['id'];
-				$b_id = $nodes[ $b ]['id'];
+				$a_id    = $nodes[ $a ]['id'];
+				$b_id    = $nodes[ $b ]['id'];
+				$a_right = cpdangit_gutenberg_rtc_yjs_id_key( $nodes[ $a ]['right_origin'] ?? null );
+				$b_right = cpdangit_gutenberg_rtc_yjs_id_key( $nodes[ $b ]['right_origin'] ?? null );
+
+				if ( $a_right === $b ) {
+					return -1;
+				}
+
+				if ( $b_right === $a ) {
+					return 1;
+				}
+
 				return ( (int) $a_id['client'] <=> (int) $b_id['client'] ) ?: ( (int) $a_id['clock'] <=> (int) $b_id['clock'] );
 			}
 		);
